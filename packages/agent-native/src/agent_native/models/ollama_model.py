@@ -83,7 +83,11 @@ class Ollama:
             "model": model.model_id,
             "messages": _to_ollama_messages(messages),
             "stream": True,
-            "options": {"temperature": temperature},
+            "options": {
+                "temperature": temperature,
+                "top_p": kwargs.get("top_p", 1.0),
+                **({"num_predict": kwargs["max_tokens"]} if kwargs.get("max_tokens") is not None else {}),
+            },
         }
         if tools:
             request["tools"] = tools

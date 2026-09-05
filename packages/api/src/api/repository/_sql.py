@@ -318,3 +318,33 @@ WHERE task_id = %s
 ORDER BY attempt DESC
 LIMIT 1
 """
+
+# Thread deletion, leaf tables first. The thread row itself is scoped to the
+# API-owned actor so one caller can never delete another owner's thread.
+DELETE_THREAD_EVENTS = """
+DELETE FROM agent_events AS event
+USING agent_runs AS run, agent_tasks AS task
+WHERE event.run_id = run.id
+  AND run.task_id = task.id
+  AND task.thread_id = %s
+"""
+
+DELETE_THREAD_RUNS = """
+DELETE FROM agent_runs AS run
+USING agent_tasks AS task
+WHERE run.task_id = task.id
+  AND task.thread_id = %s
+"""
+
+DELETE_THREAD_TASKS = """
+DELETE FROM agent_tasks
+WHERE thread_id = %s
+"""
+
+DELETE_THREAD = """
+DELETE FROM agent_threads AS thread
+USING actors AS owner
+WHERE thread.id = %s
+  AND thread.owner_actor_id = owner.id
+  AND owner.external_id = %s
+"""

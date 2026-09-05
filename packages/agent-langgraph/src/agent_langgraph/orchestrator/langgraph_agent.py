@@ -132,6 +132,18 @@ class LangGraphAgent(IAgentOrchestrator):
         if close_registry is not None:
             await close_registry()
 
+    async def reconfigure(self, config: AgentConfig) -> None:
+        """Apply model/runtime settings to future invocations.
+
+        The compiled graph and checkpoint store are independent of the model
+        provider, so active checkpoints remain valid. Existing invocations keep
+        their context; subsequent tasks receive the new provider and config.
+        """
+        async with self._compile_lock:
+            self.config = config
+            self._model_provider = ModelProvider(config)
+            self._prompt_manager = PromptManager(config.prompts)
+
     def _build_context(
         self,
         task: AgentTask,

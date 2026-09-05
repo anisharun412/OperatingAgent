@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, status
+from pydantic import BaseModel
 
 from ..dependencies import get_task_service
 from ..schemas import (
@@ -17,6 +18,30 @@ from ..schemas import (
 from ..services.task_service import TaskService
 
 router = APIRouter(prefix="/threads", tags=["threads"])
+
+
+class CreateThreadRequest(BaseModel):
+    title: str | None = None
+
+
+@router.post("", response_model=ThreadResponse, status_code=status.HTTP_201_CREATED)
+async def create_thread(
+    body: CreateThreadRequest,
+    service: TaskServiceDep,
+) -> ThreadResponse:
+    return ThreadResponse.from_record(await service.create_thread(body.title))
+
+
+@router.delete("/{thread_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_thread(thread_id: str, service: TaskServiceDep):
+    """Delete a thread and all of its tasks, runs, and events."""
+    from fastapi import Response
+
+    from ..errors import ThreadNotFound
+
+    if not await service.delete_thread(thread_id):
+        raise ThreadNotFound(thread_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
 Limit = Annotated[int, Query(ge=1, le=500)]

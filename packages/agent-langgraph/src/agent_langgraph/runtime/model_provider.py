@@ -3,6 +3,17 @@ from langchain_core.language_models import BaseChatModel
 from pydantic import SecretStr
 
 
+def _ollama_base_url(value: str | None) -> str | None:
+    """Normalize user-entered Ollama URLs to the server root.
+
+    LangChain's Ollama client appends ``/api`` itself. Passing an API path here
+    produces the confusing ``404 page not found`` response from Ollama.
+    """
+    if not value:
+        return None
+    return value.rstrip("/").removesuffix("/api") or None
+
+
 class ModelProvider:
     """
     Provides the LLM used by the LangGraph nodes.
@@ -33,7 +44,7 @@ class ModelProvider:
                 temperature=config.llm.temperature,
                 top_p=config.llm.top_p,
                 num_predict=config.llm.max_tokens,
-                base_url=config.llm.base_url,
+                base_url=_ollama_base_url(config.llm.base_url),
                 client_kwargs={"timeout": config.llm.timeout_seconds},
             )
 
@@ -46,7 +57,7 @@ class ModelProvider:
                 timeout=config.llm.timeout_seconds,
                 model_kwargs={"top_p": config.llm.top_p},
                 api_key=SecretStr(config.llm.api_key),
-                base_url=config.llm.base_url,
+                base_url=(config.llm.base_url or None),
             )
 
         if provider == "anthropic":
@@ -58,7 +69,7 @@ class ModelProvider:
                 max_tokens_to_sample=config.llm.max_tokens,
                 top_p=config.llm.top_p,
                 api_key=SecretStr(config.llm.api_key),
-                base_url=config.llm.base_url,
+                base_url=(config.llm.base_url or None),
                 stop=None,
             )
 
@@ -71,7 +82,7 @@ class ModelProvider:
                 timeout=config.llm.timeout_seconds,
                 max_completion_tokens=config.llm.max_tokens,
                 api_key=SecretStr(config.llm.api_key),
-                base_url=config.llm.base_url,
+                base_url=(config.llm.base_url or None),
             )
 
         raise NotImplementedError(

@@ -151,6 +151,12 @@ async def send_message(
                 cancellation=cancellation,
                 media=media_parts,
             )
+            try:
+                lf = getattr(service.runtime.monitoring, "langfuse_client", None)
+                if lf is not None:
+                    lf.flush()
+            except Exception:
+                pass
             return run_result
         finally:
             # Unregister cancellation when run ends
@@ -244,6 +250,12 @@ async def resume_run(
     cancels[session_id] = cancellation
     try:
         result = await service.resume_run(session_id, limits=limits, cancellation=cancellation)
+        try:
+            lf = getattr(service.runtime.monitoring, "langfuse_client", None)
+            if lf is not None:
+                lf.flush()
+        except Exception:
+            pass
     finally:
         cancels.pop(session_id, None)
 

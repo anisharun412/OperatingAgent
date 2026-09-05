@@ -69,6 +69,23 @@ class TaskService:
     def available_tracks(self) -> list[str]:
         return [t.value for t in self._orchestrators]
 
+    @property
+    def orchestrators(self) -> dict[str, IAgentOrchestrator]:
+        return {track.value: orchestrator for track, orchestrator in self._orchestrators.items()}
+
+    async def create_thread(self, title: str | None = None) -> ThreadRecord:
+        """Create an empty thread so a chat can exist before its first task."""
+        return await self._repo.create_thread(str(uuid4()), title)
+
+    async def delete_thread(self, thread_id: str) -> bool:
+        """Delete a thread and everything under it; False when unknown."""
+        if thread_id in self._active_thread_ids:
+            raise TaskAlreadyRunning(thread_id)
+        deleted = await self._repo.delete_thread(thread_id)
+        if deleted:
+            self._active_thread_ids.discard(thread_id)
+        return deleted
+
     async def create_task(
         self,
         goal: str,

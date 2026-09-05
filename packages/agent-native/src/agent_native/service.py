@@ -161,6 +161,50 @@ class AgentRuntime:
     def config_for(self, agent: str) -> AgentConfig:
         return self.agents.get(agent) or AgentConfig(name=agent)
 
+    def reconfigure_models(
+        self,
+        *,
+        provider: str,
+        model: str,
+        base_url: str | None = None,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        max_tokens: int | None = None,
+        timeout_seconds: int = 60,
+    ) -> list[str]:
+        """Replace provider/model registrations for future runs.
+
+        Existing loops keep their resolved provider and model objects. New runs
+        resolve the updated registry without rebuilding the database, tools, or
+        event bus.
+        """
+        provider = provider.strip().lower()
+        model = model.strip()
+        if not provider or not model:
+            raise ValueError("provider and model are required")
+
+        if provider == "groq":
+            from .models.groq_model import Groq
+
+            self.models.register_provider("groq", Groq(base_url=base_url))
+        elif provider == "ollama":
+            from .models.ollama_model import Ollama
+
+            self.models.register_provider("ollama", Ollama(host=base_url or "http://localhost:11434"))
+        else:
+            raise ValueError("native provider must be 'groq' or 'ollama'")
+
+        from .models.base import Model
+
+        self.models.register_model(model, Model(provider=provider, model_id=model))
+        for config in self.agents.values():
+            config.model = model
+            config.temperature = temperature
+            config.top_p = top_p
+            config.max_output_tokens = max_tokens
+            config.timeout_seconds = timeout_seconds
+        return self.models.list_model_names()
+
 
 class AgentService:
     """The small set of things the outside world asks the agent to do."""

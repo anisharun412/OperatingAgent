@@ -307,28 +307,55 @@ class PostgresDatabase(Database):
         return [_row_to_session(row) for row in rows]
 
     async def save_message(self, message: Message) -> None:
-        await self._execute(
-            """
-            INSERT INTO conversation_messages (id, thread_id, role, parts, model, usage, created_at, native_message_id)
-            VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8)
-            ON CONFLICT (id) DO NOTHING
-            """,
-            _uuid_for("message", message.id),
-            message.session_id,
-            message.role.value,
-            json.dumps([_part_to_json(p) for p in message.parts]),
-            message.model,
-            json.dumps(_usage_to_json(message.usage)) if message.usage else None,
-            message.created_at,
-            message.id,
-        )
+        try:
+            await self._execute(
+                """
+                INSERT INTO conversation_messages (id, thread_id, role, parts, model, usage, created_at, native_message_id)
+                VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                _uuid_for("message", message.id),
+                message.session_id,
+                message.role.value,
+                json.dumps([_part_to_json(p) for p in message.parts]),
+                message.model,
+                json.dumps(_usage_to_json(message.usage)) if message.usage else None,
+                message.created_at,
+                message.id,
+            )
+        except Exception as exc:
+            if "native_message_id" not in str(exc):
+                raise
+            await self._execute(
+                """
+                INSERT INTO conversation_messages (id, thread_id, role, parts, model, usage, created_at)
+                VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7)
+                ON CONFLICT (id) DO NOTHING
+                """,
+                _uuid_for("message", message.id),
+                message.session_id,
+                message.role.value,
+                json.dumps([_part_to_json(p) for p in message.parts]),
+                message.model,
+                json.dumps(_usage_to_json(message.usage)) if message.usage else None,
+                message.created_at,
+            )
 
     async def load_conversation(self, session_id: str) -> Conversation:
-        rows = await self._fetch(
-            "SELECT COALESCE(native_message_id, id::text) AS id, thread_id AS session_id, role, parts, model, usage, created_at "
-            "FROM conversation_messages WHERE thread_id = $1 ORDER BY ordinal",
-            session_id,
-        )
+        try:
+            rows = await self._fetch(
+                "SELECT COALESCE(native_message_id, id::text) AS id, thread_id AS session_id, role, parts, model, usage, created_at "
+                "FROM conversation_messages WHERE thread_id = $1 ORDER BY ordinal",
+                session_id,
+            )
+        except Exception as exc:
+            if "native_message_id" not in str(exc):
+                raise
+            rows = await self._fetch(
+                "SELECT id::text AS id, thread_id AS session_id, role, parts, model, usage, created_at "
+                "FROM conversation_messages WHERE thread_id = $1 ORDER BY ordinal",
+                session_id,
+            )
         return Conversation([_row_to_message(row) for row in rows])
 
     # -- events ------------------------------------------------------------

@@ -77,6 +77,9 @@ class AgentConfig:
     description: str = ""
     system_prompt: str = "You are a careful, helpful assistant that can use tools."
     temperature: float = 0.0  # deterministic by default, so runs are reproducible
+    top_p: float = 1.0
+    max_output_tokens: int | None = None
+    timeout_seconds: int = 60
     max_turns: int = 10
     #: The agent's default thinking budget: "" (let the provider decide) or one of
     #: "low"/"medium"/"high". A per-run `Limits.reasoning_effort` overrides it; a

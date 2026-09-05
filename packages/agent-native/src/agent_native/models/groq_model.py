@@ -74,6 +74,9 @@ class Groq:
             "temperature": temperature,
             "stream": True,
         }
+        request["top_p"] = kwargs.get("top_p", 1.0)
+        if kwargs.get("max_tokens") is not None:
+            request["max_tokens"] = kwargs["max_tokens"]
         # ``stream_options`` is part of OpenAI's streaming API, but the Groq
         # SDK versions in the wild do not all expose it.  Passing it to a
         # generated SDK method that lacks the keyword fails before any request

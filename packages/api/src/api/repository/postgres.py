@@ -45,6 +45,35 @@ class PostgresTaskRepository:
     def __init__(self, pool: AsyncConnectionPool[Any]) -> None:
         self._pool = pool
 
+    async def create_thread(self, thread_id: str, title: str | None = None) -> ThreadRecord:
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor() as cur,
+        ):
+            await cur.execute(_sql.UPSERT_ACTOR, (_API_ACTOR_EXTERNAL_ID, _API_ACTOR_DISPLAY_NAME))
+            actor = await cur.fetchone()
+            if actor is None:
+                raise RuntimeError("actor upsert returned no row")
+            await cur.execute(_sql.UPSERT_THREAD, (thread_id, actor[0], title))
+        records = await self.list_threads(limit=500, offset=0)
+        for record in records:
+            if record.id == thread_id:
+                return record
+        raise RuntimeError("thread creation did not return a record")
+
+    async def delete_thread(self, thread_id: str) -> bool:
+        async with (
+            self._pool.connection() as conn,
+            conn.transaction(),
+            conn.cursor() as cur,
+        ):
+            await cur.execute(_sql.DELETE_THREAD_EVENTS, (thread_id,))
+            await cur.execute(_sql.DELETE_THREAD_RUNS, (thread_id,))
+            await cur.execute(_sql.DELETE_THREAD_TASKS, (thread_id,))
+            await cur.execute(_sql.DELETE_THREAD, (thread_id, _API_ACTOR_EXTERNAL_ID))
+            return cur.rowcount > 0
+
     async def save_task(self, task: AgentTask) -> None:
         title = task.metadata.get("title")
         async with (

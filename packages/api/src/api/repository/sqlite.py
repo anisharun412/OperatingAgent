@@ -127,6 +127,19 @@ class SQLiteTaskRepository(InMemoryTaskRepository):
             await super().save_task(task)
             await self._persist_locked()
 
+    async def create_thread(self, thread_id: str, title: str | None = None):  # type: ignore[override]
+        async with self._write_lock:
+            record = await super().create_thread(thread_id, title)
+            await self._persist_locked()
+            return record
+
+    async def delete_thread(self, thread_id: str) -> bool:
+        async with self._write_lock:
+            deleted = await super().delete_thread(thread_id)
+            if deleted:
+                await self._persist_locked()
+            return deleted
+
     async def create_run(
         self, task_id: str, config: AgentConfig, metadata: dict | None = None
     ) -> str:

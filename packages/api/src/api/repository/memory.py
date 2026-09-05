@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from common.agent import AgentRunResult, AgentTask
@@ -63,17 +63,48 @@ class InMemoryTaskRepository:
 
     async def save_task(self, task: AgentTask) -> None:
         self._tasks[task.id] = task
+        # AgentTask.created_at is naive (datetime.utcnow); thread timestamps
+        # are tz-aware, so normalize before storing or comparing.
+        created_at = task.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
         thread = self._threads.get(task.thread_id)
         if thread is None:
             self._threads[task.thread_id] = _Thread(
                 id=task.thread_id,
                 title=task.metadata.get("title"),
-                created_at=task.created_at,
-                updated_at=task.created_at,
+                created_at=created_at,
+                updated_at=created_at,
             )
         else:
-            thread.updated_at = max(thread.updated_at, task.created_at)
+            thread.updated_at = max(thread.updated_at, created_at)
         self._task_status.setdefault(task.id, TaskStatus.PLANNING)
+
+    async def create_thread(self, thread_id: str, title: str | None = None) -> ThreadRecord:
+        now = datetime.now(UTC)
+        thread = self._threads.get(thread_id)
+        if thread is None:
+            thread = _Thread(thread_id, title, now, now)
+            self._threads[thread_id] = thread
+        return ThreadRecord(thread.id, thread.title, 0, thread.created_at, thread.updated_at)
+
+    async def delete_thread(self, thread_id: str) -> bool:
+        if thread_id not in self._threads:
+            return False
+        task_ids = {task.id for task in self._tasks.values() if task.thread_id == thread_id}
+        for task_id in task_ids:
+            del self._tasks[task_id]
+            self._task_status.pop(task_id, None)
+        for run_id in [run.id for run in self._runs.values() if run.task_id in task_ids]:
+            del self._runs[run_id]
+        for approval_id in [
+            approval_id
+            for approval_id, record in self._approvals.items()
+            if record.request.task_id in task_ids
+        ]:
+            del self._approvals[approval_id]
+        del self._threads[thread_id]
+        return True
 
     async def get_task(self, task_id: str) -> AgentTask:
         try:

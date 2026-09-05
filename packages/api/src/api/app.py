@@ -23,6 +23,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .config import ApiSettings
 from .environment import load_environment
 from .errors import register_exception_handlers
+from .langgraph_settings import router as langgraph_settings_router
 from .orchestration.factory import build_orchestrators
 from .repository.factory import build_repository
 from .repository.memory import InMemoryTaskRepository
@@ -36,6 +37,7 @@ from .services.task_service import TaskService
 # Native-track imports are optional at import-time so the Task API still boots
 # even if agent-native is not installed; the lifespan will degrade gracefully.
 try:
+    from .native import settings as native_settings
     from .native.routers import events as native_events
     from .native.routers import health as native_health
     from .native.routers import messages as native_messages
@@ -46,7 +48,7 @@ try:
     _NATIVE_ROUTERS_AVAILABLE = True
 except ImportError:  # pragma: no cover
     _NATIVE_ROUTERS_AVAILABLE = False
-    native_events = native_health = native_messages = native_permissions = native_runs = native_sessions = None  # type: ignore
+    native_events = native_health = native_messages = native_permissions = native_runs = native_sessions = native_settings = None  # type: ignore
 
 log = logging.getLogger(__name__)
 
@@ -367,6 +369,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
     app.include_router(threads.router)
     app.include_router(stream.router)
     app.include_router(approvals.router)
+    app.include_router(langgraph_settings_router)
     # Native-track routes — mounted separately so existing paths are untouched
     if _NATIVE_ROUTERS_AVAILABLE:
         assert native_health is not None
@@ -377,6 +380,7 @@ def create_app(settings: ApiSettings | None = None) -> FastAPI:
         assert native_runs is not None
         app.include_router(native_health.router)
         app.include_router(native_sessions.router)
+        app.include_router(native_settings.router)
         app.include_router(native_messages.router)
         app.include_router(native_events.router)
         app.include_router(native_permissions.router)

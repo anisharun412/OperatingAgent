@@ -45,6 +45,14 @@ class RunSummary:
 
 @runtime_checkable
 class TaskRepository(Protocol):
+    async def create_thread(self, thread_id: str, title: str | None = None) -> ThreadRecord:
+        """Create an empty conversation thread for the desktop UI."""
+        ...
+
+    async def delete_thread(self, thread_id: str) -> bool:
+        """Delete a thread and everything under it; False when unknown."""
+        ...
+
     async def save_task(self, task: AgentTask) -> None:
         """Persist a task (and, for Postgres, its owning actor + thread)."""
         ...

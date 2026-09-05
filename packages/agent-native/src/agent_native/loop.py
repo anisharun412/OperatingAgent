@@ -20,6 +20,7 @@ dropped client can catch up later.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import time
@@ -798,7 +799,27 @@ class AgentLoop:
         finish_reason = "stop"
         cancelled = False
 
-        stream = provider.stream(wire, tool_schemas, model, context.config.temperature, **_effort_kwargs(context))
+        optional_kwargs = {
+            "top_p": getattr(context.config, "top_p", 1.0),
+            "max_tokens": getattr(context.config, "max_output_tokens", None),
+            "timeout_seconds": getattr(context.config, "timeout_seconds", 60),
+            **_effort_kwargs(context),
+        }
+        try:
+            parameters = inspect.signature(provider.stream).parameters
+            if not any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+                optional_kwargs = {
+                    key: value for key, value in optional_kwargs.items() if key in parameters
+                }
+        except (TypeError, ValueError):
+            pass
+        stream = provider.stream(
+            wire,
+            tool_schemas,
+            model,
+            context.config.temperature,
+            **optional_kwargs,
+        )
         try:
             async for event in stream:
                 if context.cancellation.cancelled:
