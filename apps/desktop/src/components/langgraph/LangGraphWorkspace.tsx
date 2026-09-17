@@ -78,7 +78,12 @@ export function LangGraphWorkspace() {
     try {
       const list = await taskApi.listThreadTasks(tid, { limit: 100 });
       setTasks(list);
-      if (list[0]?.workspace && list[0].workspace !== workspace) {
+      const chosen = loadSettings().workspace;
+      if (
+        list[0]?.workspace &&
+        list[0].workspace !== workspace &&
+        !(chosen && chosen !== ".")
+      ) {
         adoptedWorkspaceRef.current = list[0].workspace;
         setWorkspace(list[0].workspace);
         saveSettings({ ...loadSettings(), workspace: list[0].workspace });

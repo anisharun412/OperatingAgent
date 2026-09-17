@@ -107,6 +107,11 @@ class SandboxConfig:
 
     image: str = ""
 
+    #: True (default) runs terminal commands on the host when Docker is
+    #: unavailable instead of failing closed. Mirrors the pool's fallback flag
+    #: and ``AGENT_SANDBOX_FALLBACK`` in the API settings.
+    fallback: bool = True
+
 
 # ============================================================
 # Tool Permissions

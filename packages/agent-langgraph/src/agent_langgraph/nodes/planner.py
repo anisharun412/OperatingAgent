@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any
 
 from agent_langgraph.graph.state import AgentPlan, AgentState, Finding
 from agent_langgraph.runtime.context import AgentContext
@@ -116,6 +118,150 @@ async def _available_tools_hint(runtime: Runtime[AgentContext]) -> str:
     return f"\n\nAvailable tools (reference these by name in tool_name):\n{lines}"
 
 
+#: Plain-text recovery attempts after a structured plan parse fails.
+_PLAN_TEXT_RETRIES = 2
+#: How much of a failing completion to quote back in the corrective prompt.
+_MAX_FAILING_SAMPLE = 600
+
+
+def _truncate(text: str, limit: int = _MAX_FAILING_SAMPLE) -> str:
+    text = text.strip()
+    return text if len(text) <= limit else text[:limit] + "... [truncated]"
+
+
+def _plan_shape_hint() -> str:
+    """The exact shape a plan response must have (for corrective prompts)."""
+    return (
+        "Reply with ONLY a single JSON object shaped EXACTLY like this example, "
+        "with real values for the goal — no prose, no markdown fences, and do "
+        "NOT return the JSON Schema definition: "
+        '{"summary": "...", "reasoning": "...", '
+        '"steps": [{"id": 1, "description": "...", "tool_name": "...", '
+        '"arguments": {...}}], "requires_remediation": false}.'
+    )
+
+
+def _extract_text(response: Any) -> str:
+    """Pull text out of a chat completion, whatever its content shape."""
+    content = getattr(response, "content", response)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(part for part in parts if part)
+    return str(content or "")
+
+
+def _strip_json_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[: -len("```")]
+    return text.strip()
+
+
+def _looks_like_schema(payload: Any, raw_text: str) -> bool:
+    """Detect the witnessed failure: the model echoed the schema itself."""
+    if "Structured planner output" in raw_text:
+        return True
+    if isinstance(payload, list):
+        return len(payload) == 1 and _looks_like_schema(payload[0], "")
+    return (
+        isinstance(payload, dict)
+        and payload.get("type") == "object"
+        and isinstance(payload.get("properties"), dict)
+    )
+
+
+async def _recover_plan(
+    raw_model: Any,
+    messages: list,
+    first_error: Exception,
+    *,
+    attempts: int = _PLAN_TEXT_RETRIES,
+) -> AgentPlan:
+    """Rebuild a plan in plain text after structured parsing failed.
+
+    Providers in ``json_schema`` mode occasionally echo the prompt's schema
+    verbatim (or otherwise unparsable text). Crashing the run then is worse
+    than one more model round-trip: ask the model — without the structured
+    wrapper — to produce the plan object, quoting its own failing output back
+    as a correction. Raises ``PlanningException`` only when every attempt fails.
+    """
+    transcript: list = [
+        *messages,
+        HumanMessage(
+            content=(
+                f"Your previous response was not a valid plan "
+                f"({type(first_error).__name__}: {first_error}). "
+                + _plan_shape_hint()
+            )
+        ),
+    ]
+    last_error: Exception | None = None
+    for _attempt in range(1, attempts + 1):
+        try:
+            response = await raw_model.ainvoke(transcript)
+        except Exception as exc:  # noqa: BLE001 - retried with a correction below
+            last_error = exc
+            transcript = [
+                *transcript,
+                HumanMessage(content=f"The model call failed ({exc}). {_plan_shape_hint()}"),
+            ]
+            continue
+        text = _strip_json_fences(_extract_text(response))
+        try:
+            payload = json.loads(text)
+        except ValueError as exc:
+            last_error = exc
+            transcript = [
+                *transcript,
+                HumanMessage(
+                    content=(
+                        f"That was not valid JSON ({exc}). {_plan_shape_hint()} "
+                        f"Your failing response was: {_truncate(text)}"
+                    )
+                ),
+            ]
+            continue
+        if _looks_like_schema(payload, text):
+            last_error = ValueError("model returned the JSON Schema instead of a plan")
+            transcript = [
+                *transcript,
+                HumanMessage(
+                    content=(
+                        "You returned the JSON Schema definition instead of an "
+                        "actual plan instance. Produce the plan object itself. "
+                        + _plan_shape_hint()
+                    )
+                ),
+            ]
+            continue
+        try:
+            return AgentPlan.model_validate(payload)
+        except Exception as exc:  # noqa: BLE001 - corrected explicitly below
+            last_error = exc
+            transcript = [
+                *transcript,
+                HumanMessage(
+                    content=(
+                        f"That response failed plan validation: {exc}. "
+                        + _plan_shape_hint()
+                        + f" Your failing response was: {_truncate(text)}"
+                    )
+                ),
+            ]
+    raise PlanningException(
+        f"planner recovery failed after {attempts} attempt(s): {last_error}"
+    )
+
+
 async def planner_function(
     goal: str,
     messages: list,
@@ -156,11 +302,23 @@ async def planner_function(
 
     try:
         plan = await model.ainvoke(full_messages)
-    except Exception as exc:
-        log.error("planning failed with provider %s: %s", ctx.config.llm.provider, exc)
-        raise PlanningException(
-            f"planner failed with provider {ctx.config.llm.provider}: {exc}"
-        ) from exc
+    except Exception as exc:  # noqa: BLE001 - every model failure funnels into recovery below
+        # A model that echoes the schema (or otherwise unparsable text) must not
+        # end the run: one plain-text corrective round-trip recovers it, and the
+        # original error stays in the final message for diagnosis.
+        provider = ctx.config.llm.provider
+        log.warning(
+            "structured plan parse failed with provider %s (%s: %s); retrying with a corrective prompt",
+            provider, type(exc).__name__, exc,
+        )
+        try:
+            plan = await _recover_plan(ctx.model_provider.get_model(), full_messages, exc)
+        except Exception as recovery_exc:
+            log.error("planning failed with provider %s: %s", provider, recovery_exc)
+            raise PlanningException(
+                f"planner failed with provider {provider}: structured parse failed ({exc}); "
+                f"recovery failed ({recovery_exc})"
+            ) from recovery_exc
 
     validated_plan = plan if isinstance(plan, AgentPlan) else AgentPlan.model_validate(plan)
     validated_plan = _remove_synthesis_steps(validated_plan)

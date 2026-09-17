@@ -130,6 +130,73 @@ class ContainerRunner:
         )
 
 
+class HostCommandRunner:
+    """Run a sandbox command on the host because the container path is down.
+
+    This is the degradation path, never the primary one: it executes the same
+    command the container would have run (``tool.sandbox_command``) directly on
+    the host, confined to the session's workspace directory, with the user's own
+    privileges and no network or filesystem isolation. It is only selected when
+    ``ContainerPool`` is built with ``fallback=True`` (the API default) and the
+    session runner cannot be created; callers surface that fact in the result
+    and the status line.
+    """
+
+    def __init__(self, workspace: str) -> None:
+        self.workspace = workspace
+
+    async def run(self, command: str | list[str], timeout: float) -> CommandOutput:
+        if isinstance(command, str):
+            args: list[str] = (
+                ["cmd", "/c", command] if sys.platform == "win32" else ["sh", "-lc", command]
+            )
+        else:
+            args = [str(part) for part in command]
+        cwd = self.workspace
+        if _threaded_subprocess_required():
+            try:
+                completed = await asyncio.to_thread(
+                    subprocess.run,
+                    args,
+                    cwd=cwd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=timeout,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return CommandOutput(-1, stderr=str(exc), timed_out=isinstance(exc, subprocess.TimeoutExpired))
+            return CommandOutput(
+                completed.returncode or 0,
+                completed.stdout.decode(errors="replace"),
+                completed.stderr.decode(errors="replace"),
+            )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            return CommandOutput(-1, stderr=str(exc), timed_out=False)
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
+        except TimeoutError:
+            try:
+                process.kill()
+                await asyncio.wait_for(process.communicate(), 10)
+            except Exception:  # noqa: BLE001 - reaping is best effort
+                log.debug("could not reap timed-out host command")
+            return CommandOutput(-1, timed_out=True)
+        return CommandOutput(
+            process.returncode or 0,
+            stdout.decode(errors="replace"),
+            stderr.decode(errors="replace"),
+        )
+
+
 class ContainerPool:
     """Create one disposable container per logical session.
 
@@ -156,6 +223,7 @@ class ContainerPool:
         cap_drop: tuple[str, ...] = ("ALL",),
         no_new_privileges: bool = True,
         user: str = "",
+        fallback: bool = True,
     ) -> None:
         self.image = image
         self.memory = memory
@@ -167,6 +235,10 @@ class ContainerPool:
         self.cap_drop = tuple(cap_drop)
         self.no_new_privileges = no_new_privileges
         self.user = user
+        #: When True (the default), a command is run on the host if the session
+        #: container cannot be created because Docker or its image is missing.
+        #: Set False to fail closed instead (``AGENT_SANDBOX_FALLBACK=error``).
+        self.fallback = fallback
         self.reason = ""
         self._runners: dict[str, ContainerRunner] = {}
         self._runner_meta: dict[str, tuple[str, str]] = {}
@@ -283,9 +355,20 @@ class ContainerPool:
         """Return a concise, user-facing description of the current mode."""
         if self._available is True:
             return f"sandbox: on - Docker container ({self.image})"
+        if self.degraded:
+            return f"sandbox: degraded - {self.reason}; terminal commands run on the host"
         if self.reason:
             return f"sandbox: off - {self.reason}"
         return "sandbox: off - Docker availability has not been checked"
+
+    @property
+    def degraded(self) -> bool:
+        """True when the container cannot be reached and host fallback is on.
+
+        Callers use this to label where a command actually ran, instead of
+        claiming an unavailable container.
+        """
+        return bool(self.fallback) and self._available is False and bool(self.reason)
 
     async def get(self, session_id: str, workspace: str) -> ContainerRunner | None:
         try:
@@ -476,34 +559,49 @@ class ContainerPool:
             sandbox_command = command
         else:
             return None
+        try:
+            from agent_native.tools.base import ToolResult
+        except ImportError:
+            # Without the agent_native result type this pool cannot answer;
+            # treat that as "not implemented" so the manager runs natively.
+            return None
         session = getattr(context, "session", None)
         session_id = str(getattr(session, "id", "native"))
         workspace = str(getattr(session, "working_directory", ".") or ".")
         runner = await self.get(session_id, workspace)
         if runner is None:
-            try:
-                from agent_native.tools.base import ToolResult
-
-                reason = self.reason or "Docker sandbox is unavailable"
-                return ToolResult(False, error=f"sandbox unavailable: {reason}")
-            except ImportError:
-                return None
+            reason = self.reason or "Docker sandbox is unavailable"
+            if self.fallback and workspace and Path(workspace).expanduser().is_dir():
+                # Degraded but usable: run the same command on the host, in the
+                # session's workspace. Fallback must never apply to a missing
+                # workspace - that is a bad argument, not a missing Docker.
+                host_result = await HostCommandRunner(
+                    str(Path(workspace).expanduser().resolve())
+                ).run(sandbox_command, timeout=timeout)
+                log.warning("sandbox host fallback: Docker unavailable (%s)", reason)
+                note = " [host fallback: ran on the host - Docker sandbox unavailable]"
+                output = host_result.combined()
+                if host_result.timed_out:
+                    return ToolResult(False, error="command timed out in sandbox")
+                if host_result.exit_code != 0:
+                    return ToolResult(
+                        False,
+                        output=output,
+                        error=f"command failed in sandbox (exit {host_result.exit_code})",
+                    )
+                return ToolResult(True, output=f"{output}{note}" if output else note)
+            return ToolResult(False, error=f"sandbox unavailable: {reason}")
         result = await runner.run(sandbox_command, timeout=timeout)
-        try:
-            from agent_native.tools.base import ToolResult
-
-            output = result.combined()
-            if result.timed_out:
-                return ToolResult(False, error="command timed out in sandbox")
-            if result.exit_code != 0:
-                return ToolResult(
-                    False,
-                    output=output,
-                    error=f"command failed in sandbox (exit {result.exit_code})",
-                )
-            return ToolResult(True, output=output or "(no output)")
-        except ImportError:
-            return None
+        output = result.combined()
+        if result.timed_out:
+            return ToolResult(False, error="command timed out in sandbox")
+        if result.exit_code != 0:
+            return ToolResult(
+                False,
+                output=output,
+                error=f"command failed in sandbox (exit {result.exit_code})",
+            )
+        return ToolResult(True, output=output or "(no output)")
 
     async def stop_all(self) -> None:
         async with self._lock:
@@ -560,4 +658,5 @@ __all__ = [
     "ContainerPool",
     "ContainerRunner",
     "ContainerSandbox",
+    "HostCommandRunner",
 ]

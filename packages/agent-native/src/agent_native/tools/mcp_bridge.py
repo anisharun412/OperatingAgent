@@ -26,9 +26,10 @@ do its job. And every failure the gateway reports comes back as a failed
 
 Those flags are also where the shell tool gets marked `SANDBOX`, which is how it
 ends up running inside a container instead of in this process (see
-`tools/sandbox.py`). If the configured sandbox cannot be created, the call
-returns a failed result instead of falling through to an unrestricted host
-process.
+`tools/sandbox.py`). When the configured sandbox cannot be created, it degrades
+to running the command on the host in the session workspace (see the pool's
+`fallback` flag): set `AGENT_SANDBOX_FALLBACK=error` to get the failed result
+back instead of a host fallback.
 """
 
 from __future__ import annotations
@@ -57,8 +58,9 @@ _SANDBOX_NOTE = (
     "directory (mounted at /workspace), there is no network, and nothing outside the "
     "project folder and /tmp is writable. Use paths relative to the project folder - "
     "an absolute path from the user's machine won't exist in there. If Docker or "
-    "the sandbox image is unavailable, the command fails instead of running on the "
-    "host."
+    "the sandbox image is unavailable, the command runs directly on the user's "
+    "machine in the project folder instead (no isolation), so it needs the real "
+    "absolute paths on that machine."
 )
 
 

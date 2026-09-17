@@ -6,7 +6,7 @@ from typing import Any, ClassVar, cast
 from common.config import SandboxConfig, ToolPermissionConfig
 from common.interfaces import IMCPClient
 from common.tools import ToolCallRequest, ToolCallResult, ToolInfo
-from sandbox import DEFAULT_IMAGE, ContainerPool
+from sandbox import DEFAULT_IMAGE, ContainerPool, HostCommandRunner
 
 log = logging.getLogger(__name__)
 
@@ -358,6 +358,7 @@ class ToolRegistry:
             self._sandbox_pool = ContainerPool(
                 image=self._sandbox.image or DEFAULT_IMAGE,
                 network=False,
+                fallback=getattr(self._sandbox, "fallback", True),
             )
         try:
             root = (
@@ -380,6 +381,18 @@ class ToolRegistry:
             )
         if runner is None:
             reason = self._sandbox_pool.reason or f"could not mount workspace {root}"
+            if getattr(self._sandbox_pool, "fallback", False) and root.is_dir():
+                # Degraded but usable: run the same command on the host, in the
+                # session workspace, mirroring the native track's host fallback.
+                log.warning("sandbox host fallback: Docker unavailable (%s)", reason)
+                note = " [host fallback: ran on the host - Docker sandbox unavailable]"
+                result = await HostCommandRunner(str(root)).run(command, timeout=300)
+                output = result.combined()
+                if result.timed_out:
+                    return ToolCallResult(success=False, output=None, error="command timed out in sandbox")
+                if result.exit_code != 0:
+                    return ToolCallResult(success=False, output=output, error=f"command failed in sandbox (exit {result.exit_code})")
+                return ToolCallResult(success=True, output=f"{output}{note}" if output else note)
             return ToolCallResult(
                 success=False,
                 output=None,

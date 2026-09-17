@@ -21,8 +21,10 @@ failed.
 One more thing happens in `run_authorized`: a tool marked `SANDBOX` is handed to
 the container runner instead of being called here. That is a single branch, in one
 place, because every tool call already comes through this gate. A configured
-sandbox fails closed when Docker or its image is unavailable, since an arbitrary
-host command cannot be confined merely by choosing a working directory.
+sandbox prefers running in a container; when Docker or its image is unavailable
+it degrades to the pool's host fallback (on by default, see `AGENT_SANDBOX_FALLBACK`)
+instead of failing closed. The permission prompt is labelled with wherever the
+command will actually run.
 """
 
 from __future__ import annotations
@@ -182,6 +184,10 @@ class ToolManager:
         """
         preview = tool.preview(arguments)
         if self.sandbox is not None and self._is_sandboxed(tool):
+            if getattr(self.sandbox, "degraded", False):
+                # Docker is down and host fallback is on: the permission prompt
+                # must not claim a container the command will not run inside.
+                return f"{preview} [on your machine - Docker sandbox is unavailable]"
             return f"{preview} [in the sandbox container]"
         if tool.definition.permissions.execution_mode is ExecutionMode.HOST_PROCESS:
             return f"{preview} [on your machine]"

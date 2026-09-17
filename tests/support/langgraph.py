@@ -154,6 +154,7 @@ class StubModel:
         answer: str = "Echoed 'hello' and summarised the result.",
         structured_error: Exception | None = None,
         invoke_error: Exception | None = None,
+        answers: list[str] | None = None,
     ) -> None:
         self.plan = plan if plan is not None else DEFAULT_PLAN
         self.verdict_success = verdict_success
@@ -161,6 +162,10 @@ class StubModel:
         self.answer = answer
         self.structured_error = structured_error
         self.invoke_error = invoke_error
+        #: Sequential replies for the unstructured ``ainvoke``; consumed one per
+        #: call, falling back to ``answer`` once empty (lets planner-recovery
+        #: tests script schema-echo-then-plan sequences).
+        self.answers = list(answers) if answers else []
 
         #: ``(schema, method)`` for every ``with_structured_output`` call.
         self.structured_calls: list[tuple[Any, Any]] = []
@@ -183,6 +188,8 @@ class StubModel:
         self.invocations.append(list(messages))
         if self.invoke_error is not None:
             raise self.invoke_error
+        if self.answers:
+            return AIMessage(content=self.answers.pop(0))
         return AIMessage(content=self.answer)
 
 

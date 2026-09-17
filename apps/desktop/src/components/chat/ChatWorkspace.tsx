@@ -480,7 +480,12 @@ export function ChatWorkspace({
           // Doing so used to remove the live answer and keep polling forever.
           const tasks = await taskApi.listThreadTasks(id, { limit: 100 });
           if (!isCurrent()) return;
-          if (tasks[0]?.workspace && tasks[0].workspace !== workspace) {
+          const chosen = loadSettings().workspace;
+          if (
+            tasks[0]?.workspace &&
+            tasks[0].workspace !== workspace &&
+            !(chosen && chosen !== ".")
+          ) {
             adoptedWorkspaceRef.current = tasks[0].workspace;
             setWorkspace(tasks[0].workspace);
             saveSettings({ ...loadSettings(), workspace: tasks[0].workspace });

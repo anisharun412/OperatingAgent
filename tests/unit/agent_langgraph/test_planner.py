@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from agent_langgraph.graph.state import AgentPlan, Finding, PlanStep
 from agent_langgraph.nodes.planner import PlannerNode, planner_function
@@ -88,6 +90,67 @@ async def test_planner_wraps_model_error_in_planning_exception(agent_config) -> 
     with pytest.raises(PlanningException) as excinfo:
         await planner_function("goal", [], runtime)
     assert "provider exploded" in str(excinfo.value)
+
+
+async def test_planner_recovers_when_model_echoes_schema(agent_config) -> None:
+    """The witnessed Groq failure: json_schema mode returns the schema itself.
+
+    The run must recover via the corrective prompt instead of crashing with
+    ``Failed to parse AgentPlan``.
+    """
+    schema_echo = json.dumps(
+        [
+            {
+                "description": "Structured planner output.",
+                "properties": {"summary": {"type": "string"}},
+                "type": "object",
+            }
+        ]
+    )
+    good_plan = json.dumps(
+        {
+            "summary": "scaffold the project",
+            "reasoning": "the project folder does not exist yet",
+            "steps": [
+                {
+                    "id": 1,
+                    "description": "scaffold a vite project",
+                    "tool_name": "run_command",
+                    "arguments": {"command": "npm create vite@latest test"},
+                }
+            ],
+            "requires_remediation": False,
+        }
+    )
+    model = StubModel(
+        structured_error=RuntimeError("Failed to parse AgentPlan"),
+        answers=[schema_echo, good_plan],
+    )
+    runtime = build_runtime(build_context(agent_config, model=model))
+
+    plan = await planner_function("create a vite project", [], runtime)
+
+    assert isinstance(plan, AgentPlan)
+    assert plan.summary == "scaffold the project"
+    assert [step.tool_name for step in plan.steps] == ["run_command"]
+    # The schema echo was quoted back to the model as a correction.
+    second_prompt = model.invocations[1][-1].content
+    assert "instead of an actual plan instance" in second_prompt
+
+
+async def test_planner_recovery_exhaustion_reports_original_error(agent_config) -> None:
+    """Recovery that never converges still surfaces the structured error."""
+    model = StubModel(
+        structured_error=RuntimeError("provider exploded"),
+        answers=["not json", "still not json"],
+    )
+    runtime = build_runtime(build_context(agent_config, model=model))
+
+    with pytest.raises(PlanningException) as excinfo:
+        await planner_function("goal", [], runtime)
+    message = str(excinfo.value)
+    assert "provider exploded" in message
+    assert "recovery failed" in message
 
 
 async def test_planner_forwards_prior_messages(agent_config) -> None:

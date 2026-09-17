@@ -74,6 +74,7 @@ start a separate HTTP MCP process for normal API use.
 | `AGENT_CHECKPOINT_BACKEND` / `AGENT_CHECKPOINT_NAMESPACE` | `auto` / `default` | checkpoint storage and namespace |
 | `AGENT_SANDBOX_ENABLED` / `AGENT_WORKSPACE` | `true` / `./workspace` | filesystem tool confinement |
 | `AGENT_SANDBOX_IMAGE` | `operating-agent-sandbox:py312` | Docker image used for terminal tools |
+| `AGENT_SANDBOX_FALLBACK` | `host` | `host` runs terminal commands on the host when Docker is unavailable; `error` fails closed instead |
 | `AGENT_PERMISSION_*` | `true` | category switches for filesystem, terminal, git, search, knowledge, and memory tools |
 
 Langfuse tracing follows the shared `observability` package: it is enabled only
@@ -105,7 +106,9 @@ panel polls `GET /native/sandbox`; it should show the image and `sandbox: on`.
 Terminal commands are then executed in a disposable container with the chosen
 workspace mounted at `/workspace`, no network, a read-only root filesystem,
 and the configured resource limits. If Docker or the image is unavailable, the
-command fails closed instead of running on the host.
+pool degrades to running the command on the host in the session workspace
+(`sandbox: degraded ...` in the status panel) so the agent keeps working; set
+`AGENT_SANDBOX_FALLBACK=error` to restore the fail-closed behavior instead.
 
 ## HTTP security
 

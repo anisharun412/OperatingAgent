@@ -23,6 +23,19 @@ async def test_probe_and_status_report_docker_unavailable(monkeypatch) -> None:
     pool = ContainerPool()
 
     assert await pool.probe() is False
+    assert pool.degraded is True
+    assert pool.status_line() == (
+        "sandbox: degraded - Docker CLI is not installed; terminal commands run on the host"
+    )
+    await pool.close()
+
+
+async def test_probe_and_status_report_docker_unavailable_fail_closed(monkeypatch) -> None:
+    monkeypatch.setattr("sandbox.shutil.which", lambda _name: None)
+    pool = ContainerPool(fallback=False)
+
+    assert await pool.probe() is False
+    assert pool.degraded is False
     assert pool.status_line() == "sandbox: off - Docker CLI is not installed"
     await pool.close()
 
@@ -81,9 +94,33 @@ async def test_invalid_workspace_does_not_start_a_container(monkeypatch, tmp_pat
     assert pool._available is None
 
 
-async def test_native_command_fails_closed_when_docker_is_unavailable(monkeypatch, tmp_path) -> None:
+async def test_native_command_falls_back_to_host_when_docker_is_unavailable(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("sandbox.shutil.which", lambda _name: None)
     pool = ContainerPool()
+
+    class _Tool:
+        @staticmethod
+        def sandbox_command(_arguments):
+            return "echo unrestricted"
+
+    class _Session:
+        id = "session"
+        working_directory = str(tmp_path)
+
+    class _Context:
+        session = _Session()
+
+    result = await pool.run(_Tool(), {}, _Context(), 5)
+    assert isinstance(result, ToolResult)
+    assert result.success is True
+    assert "unrestricted" in result.output
+    assert "[host fallback" in result.output
+    assert pool.degraded is True
+
+
+async def test_native_command_fails_closed_when_docker_is_unavailable(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr("sandbox.shutil.which", lambda _name: None)
+    pool = ContainerPool(fallback=False)
 
     class _Tool:
         @staticmethod
@@ -101,6 +138,29 @@ async def test_native_command_fails_closed_when_docker_is_unavailable(monkeypatc
     assert isinstance(result, ToolResult)
     assert result.success is False
     assert "Docker CLI is not installed" in result.error
+
+
+async def test_missing_workspace_never_falls_back_to_host(monkeypatch, tmp_path) -> None:
+    """A bad workspace is a bad argument, not a reason to run on the host."""
+    monkeypatch.setattr("sandbox.shutil.which", lambda _name: None)
+    pool = ContainerPool()
+
+    class _Tool:
+        @staticmethod
+        def sandbox_command(_arguments):
+            return "echo unrestricted"
+
+    class _Session:
+        id = "session"
+        working_directory = str(tmp_path / "missing")
+
+    class _Context:
+        session = _Session()
+
+    result = await pool.run(_Tool(), {}, _Context(), 1)
+    assert isinstance(result, ToolResult)
+    assert result.success is False
+    assert "workspace does not exist" in result.error
 
 
 async def test_get_mounts_workspace_and_close_releases_container(monkeypatch, tmp_path) -> None:

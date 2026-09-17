@@ -33,6 +33,7 @@ def build_native_sandbox(settings: Any) -> Any | None:
         return ContainerSandbox(
             image=str(getattr(settings, "sandbox_image", "") or DEFAULT_IMAGE),
             network=False,
+            fallback=(str(getattr(settings, "sandbox_fallback", "host") or "host") == "host"),
         )
     except (ImportError, TypeError) as exc:
         log.warning("Native sandbox unavailable: %s", exc)

@@ -152,6 +152,9 @@ class ApiSettings:
     sandbox_enabled: bool = True
     sandbox_workspace: str = "./workspace"
     sandbox_image: str = ""
+    #: "host" runs commands on the host when Docker is unavailable; "error"
+    #: keeps the fail-closed behavior.
+    sandbox_fallback: str = "host"
 
     permission_file_system: bool = True
     permission_terminal: bool = True
@@ -242,6 +245,12 @@ class ApiSettings:
             sandbox_enabled=_env_bool("AGENT_SANDBOX_ENABLED", True),
             sandbox_workspace=os.getenv("AGENT_WORKSPACE", "./workspace"),
             sandbox_image=os.getenv("AGENT_SANDBOX_IMAGE", ""),
+            sandbox_fallback=(
+                "error"
+                if (os.getenv("AGENT_SANDBOX_FALLBACK") or "host").strip().lower()
+                in {"error", "off", "false", "no", "0"}
+                else "host"
+            ),
             permission_file_system=_env_bool("AGENT_PERMISSION_FILE_SYSTEM", True),
             permission_terminal=_env_bool("AGENT_PERMISSION_TERMINAL", True),
             permission_git=_env_bool("AGENT_PERMISSION_GIT", True),
@@ -319,6 +328,7 @@ class ApiSettings:
                 enabled=self.sandbox_enabled,
                 workspace=Path(self.sandbox_workspace),
                 image=self.sandbox_image,
+                fallback=(self.sandbox_fallback == "host"),
             ),
             permissions=ToolPermissionConfig(
                 file_system=self.permission_file_system,
